@@ -1,0 +1,515 @@
+#!/usr/bin/env python3
+#-------------------------------------------------------------------------------
+
+import os
+import sys
+import time
+import concurrent.futures
+import subprocess
+import re
+import socket
+import struct
+import datetime
+import tempfile
+import contextlib
+
+import ldb
+from samba.samdb import SamDB
+from samba.idmap import IDmapDB
+from samba.auth import system_session
+from samba.ndr import ndr_pack, ndr_unpack
+from samba.dcerpc import samr, security
+import samba.param
+import base64
+import binascii
+
+alldebug = True
+verboseconfig = alldebug or False
+verboseinsert = alldebug or False
+verboseoverridexid = alldebug or False
+verboseoverridetype = alldebug or True
+verbosenextrid = alldebug or False
+verbosepreviousallocation = alldebug or False
+
+#-------------------------------------------------------------------------------
+
+def infomsg(msg):
+    fullmsg = datetime.datetime.now().isoformat()+"\t"+msg
+    print(fullmsg, flush=True)
+
+#-------------------------------------------------------------------------------
+
+lp = None
+def getlp():
+    global lp
+    if lp == None:
+        lp = samba.param.LoadParm()
+        lp.load_default()
+        #print(lp.samdb_url(), flush=True)
+    return lp
+
+samdb = None
+def getsamdb():
+    global samdb
+    if samdb == None:
+        lp = getlp()
+        samdb = SamDB(lp=lp,session_info=system_session())
+    return samdb
+
+idmapdb = None
+def getidmapdb():
+    lp = getlp()
+    return IDmapDB(lp=lp,session_info=system_session())
+
+secretsdb = None
+def getsecretsdb():
+    global secretsdb
+    if secretsdb == None:
+        lp = getlp()
+        filepath = lp.private_path("secrets.ldb")
+        secretsdb = ldb.Ldb(filepath)
+    return secretsdb
+
+mapsiddomain = {}
+def sidtodomain(genericsid):
+    global mapsiddomain
+    
+    lastpos = genericsid.rfind("-")
+    domainsid = genericsid[0:lastpos]
+    #print(domainsid, flush=True)
+    
+    if domainsid not in mapsiddomain:
+        secretsdb = getsecretsdb()
+        query = "(objectClass=primaryDomain)(objectSid="+domainsid+")"
+        result = secretsdb.search(expression=query, attrs=["flatname","objectSid"])
+        if len(result) == 1:
+            record = result[0]
+            domainname = str(record["flatname"])
+        else:
+            samdb = getsamdb()
+            if domainsid == samdb.get_domain_sid():
+                lp = getlp()
+                domainname = lp.get("workgroup")
+            else:
+                domainname = "*"
+        mapsiddomain[domainsid] = domainname
+
+    #print(mapsiddomain[domainsid], flush=True)
+    return mapsiddomain[domainsid]
+
+def rangegenericrangepart(domain, part, fallbackdomain, fallbackgeneric, fallbackunknown):
+    lp = getlp()
+    param = lp.get("idmap config "+domain+" : range")
+    result = None
+    if param != None:
+        result = int(param.split("-")[part])
+    elif domain == lp.get("workgroup"):
+        result = fallbackdomain
+    elif domain == "*":
+        result = fallbackgeneric
+    else:
+        result = fallbackunkown
+    return result
+
+def rangegenericstart(domain):
+    return rangegenericrangepart(domain, 0, 3000000, 100000, 10000000)
+
+def rangegenericend(domain):
+    return rangegenericrangepart(domain, 1, 3999999, 199999, 19999999)
+
+def domainstartfromsid(domainsid):
+    domainname = sidtodomain(domainsid)
+    return rangegenericstart(domainname)
+
+def mapwellknownsid(sid):
+    basewellknown = rangegenericstart("*")
+    if sid == "CONFIG":
+        return basewellknown+0
+    elif sid == "S-1-1-0":
+        return basewellknown+1
+    elif sid == "S-1-5-2":
+        return basewellknown+2
+    elif sid == "S-1-5-7":
+        return 65534
+        return basewellknown+3
+    elif sid == "S-1-5-9":
+        return basewellknown+4
+    elif sid == "S-1-5-11":
+        return basewellknown+5
+    elif sid == "S-1-5-18":
+        return basewellknown+6
+    elif sid == "S-1-5-32-544":
+        return basewellknown+7
+    elif sid == "S-1-5-32-545":
+        return basewellknown+8
+    elif sid == "S-1-5-32-546":
+        return basewellknown+9
+    elif sid == "S-1-5-32-548":
+        return basewellknown+10
+    elif sid == "S-1-5-32-549":
+        return basewellknown+11
+    elif sid == "S-1-5-32-550":
+        return basewellknown+12
+    elif sid == "S-1-5-32-551":
+        return basewellknown+13
+    elif sid == "S-1-5-32-552":
+        return basewellknown+14
+    elif sid == "S-1-5-32-554":
+        return basewellknown+15
+    elif sid == "S-1-5-32-555":
+        return basewellknown+16
+    elif sid == "S-1-5-32-556":
+        return basewellknown+17
+    elif sid == "S-1-5-32-557":
+        return basewellknown+18
+    elif sid == "S-1-5-32-558":
+        return basewellknown+19
+    elif sid == "S-1-5-32-559":
+        return basewellknown+20
+    elif sid == "S-1-5-32-560":
+        return basewellknown+21
+    elif sid == "S-1-5-32-561":
+        return basewellknown+22
+    elif sid == "S-1-5-32-562":
+        return basewellknown+23
+    elif sid == "S-1-5-32-568":
+        return basewellknown+24
+    elif sid == "S-1-5-32-569":
+        return basewellknown+25
+    elif sid == "S-1-5-32-573":
+        return basewellknown+26
+    elif sid == "S-1-5-32-574":
+        return basewellknown+27
+    elif sid == "S-1-5-64-10":
+        return basewellknown+28
+    else:
+        if sid.startswith("S-1-5-21-") == False:
+            print("could not map well-known sid "+sid, flush=True)
+        return None
+
+def getdomainsid():
+    samdb = getsamdb()
+    sid = samdb.get_domain_sid()
+    return sid
+
+def extractridfromsid(sid):
+    lastpos = sid.rfind("-")
+    rid = sid[lastpos+1:]
+    return rid
+
+def calculatexid(sid):
+    calculated = mapwellknownsid(sid)
+    if calculated == None:
+        rangestart = domainstartfromsid(sid)
+        rid = extractridfromsid(sid)
+        #print(rid, flush=True)
+        if rangestart != None:
+            return rangestart+int(rid)
+        else:
+            return None
+    else:
+        return calculated
+
+def modifyidmapvalue(sid, attribute, value):
+    ldif_data = "dn: CN="+sid+"\nchangetype: modify\nreplace: "+attribute+"\n"+attribute+": "+value
+    idmapdb = getidmapdb()
+    idmapdb.modify_ldif(ldif_data)
+
+def insertidmapvalue(sid, xid, typeid):
+    ldif_data = "dn: CN="+sid+"\nchangetype: add\nobjectClass: sidMap\nxidNumber: "+xid+"\nobjectSid: "+sid+"\ncn: "+sid+"\ntype: "+typeid
+    idmapdb = getidmapdb()
+    idmapdb.modify_ldif(ldif_data)
+
+def getidmapvalue(sid,attribute):
+    idmapdb = getidmapdb()
+    query = "(cn="+sid+")"
+    result = idmapdb.search(expression=query, attrs=[attribute])
+    item = result[0]
+    if attribute in item:
+        value = str(item[attribute][0])
+    else:
+        value = None
+    return value
+
+def overrideidmapvalue(sid,attribute,target):
+    modified = False
+    current = getidmapvalue(sid,attribute)
+    if current != target:
+        if verboseconfig:
+            print("overriding "+attribute+" - "+sid+" -> from "+current+" into "+target, flush=True)
+        modifyidmapvalue(sid,attribute,target)
+        modified = True
+    return modified
+
+def setxidtype(sid, xid, typeid):
+    insertidmapvalue(sid, str(xid), typeid)
+
+def replacexid(sid, xid):
+    modifyidmapvalue(sid, "xidNumber", str(xid))
+
+def replacetype(sid, typeid):
+    modifyidmapvalue(sid, "type", typeid)
+
+def calculatetype(sid):
+    if sid == "S-1-5-7":
+        return "ID_TYPE_UID"
+    elif sid.startswith("S-1-5-21-"):
+        rid = extractridfromsid(sid)
+        if rid == "500":
+            return "ID_TYPE_UID"
+        elif rid == "513":
+            return "ID_TYPE_GID"
+        else:
+            return "ID_TYPE_BOTH"
+    else:
+        return "ID_TYPE_BOTH"
+
+def overridexid():
+    modified = False
+    idmapdb = getidmapdb()
+    query = "(objectSid=*)"
+    #result = idmapdb.search(expression=query, scope=ldb.SCOPE_SUBTREE)
+    result = idmapdb.search(expression=query, attrs=["objectSid","xidNumber","type"])
+    for item in result:
+        sid = str(ndr_unpack( security.dom_sid, item["objectSid"][0] ))
+        xid = str(item["xidNumber"][0])
+        typeid = str(item["type"][0])
+        newxid = calculatexid(sid)
+        newtypeid = calculatetype(sid)
+        if newxid != None:
+            if str(newxid) != xid:
+                if verboseoverridexid:
+                    print("overriding xid - "+sid+" -> from "+xid+" into "+str(newxid), flush=True)
+                modified = True
+                replacexid(sid,str(newxid))
+            else:
+                pass
+#                print("keeping xid - "+sid+" -> "+xid, flush=True)
+        if newtypeid != None:
+            if str(newtypeid) != typeid:
+                if verboseoverridetype:
+                    print("overriding type - "+sid+" -> from "+typeid+" into "+str(newtypeid), flush=True)
+                modified = True
+#                replacetype(sid,str(newtypeid), flush=True)
+            else:
+                pass
+#                print("keeping type - "+sid+" -> "+typeid, flush=True)
+    return modified
+
+def sambaavailable():
+    try:
+        samdb = getsamdb()
+        sid = samdb.get_domain_sid()
+    except:
+        available = False
+    else:
+        available = True
+    return available
+
+def split_val(num):
+    high = (0xFFFFFFFF00000000 & int(num)) >> 32
+    low = 0x00000000FFFFFFFF & int(num)
+    return low, high
+
+def merge_val(low,high):
+    #print(low, flush=True)
+    num = (int(high) << 32) | int(low)
+    #print(num, flush=True)
+    #low,high = split_val(num)
+    #print(low, flush=True)
+    #print(high, flush=True)
+    return num
+
+def findhighestridinrange(low,high):
+    #print(low, flush=True)
+    #print(high, flush=True)
+    samdb = getsamdb()
+    query = "(|(objectClass=user)(objectClass=group))"
+    result = samdb.search(expression=query, attrs=["objectSid"])
+    highest = 0
+    for item in result:
+        dn = str(item["dn"])
+        sid = str(ndr_unpack( security.dom_sid, item["objectSid"][0] ))
+        rid = int(sid.split("-")[-1])
+        if rid >= low and rid <=high and rid > highest:
+            #print(dn, flush=True)
+            #print(rid, flush=True)
+            highest = rid
+    #print(highest, flush=True)
+    #return low-1
+    if highest == 0:
+        return None
+    else:
+        return highest
+
+def setnextdnrid(dn,rid):
+    samdb = getsamdb()
+    #print(dn, flush=True)
+    ldif_data = "dn: "+dn+"\nchangetype: modify\nreplace: rIDNextRID\nrIDNextRID: "+str(rid)
+    #print(ldif_data, flush=True)
+    samdb.modify_ldif(ldif_data)
+
+def setpreviousallocationpool(dn,low,high):
+    samdb = getsamdb()
+    #print(dn, flush=True)
+    previousallocationpool = merge_val(low,high)
+    ldif_data = "dn: "+dn+"\nchangetype: modify\nreplace: rIDPreviousAllocationPool\nrIDPreviousAllocationPool: "+str(previousallocationpool)
+    #print(ldif_data, flush=True)
+    samdb.modify_ldif(ldif_data)
+    if verbosepreviousallocation:
+        print("PreviousAllocationPool for '"+dn+"' is set to "+str(low)+"-"+str(high), flush=True)
+
+def findhighest(computer):
+    samdb = getsamdb()
+    query = "(objectClass=rIDSet)"
+    result = samdb.search(expression=query, attrs=["rIDAllocationPool"])
+    highest = 0
+    for item in result:
+        dn = str(item["dn"])
+        parts = dn.split(",")
+        if "CN="+computer.upper() == parts[1]:
+            #print("found computer", flush=True)
+            low, high = split_val(int(str(item["rIDAllocationPool"])))
+            value = findhighestridinrange(low,high)
+            if value != None:
+                highest = value
+                break
+    return highest
+
+def findnextrid(computer):
+    samdb = getsamdb()
+    query = "(objectClass=rIDSet)"
+    result = samdb.search(expression=query, attrs=["rIDNextRID"])
+    nrid = 0
+    for item in result:
+        dn = str(item["dn"])
+        parts = dn.split(",")
+        if "CN="+computer.upper() == parts[1]:
+            #print("found computer", flush=True)
+            nrid = int(str(item["rIDNextRID"]))
+            break
+    return nrid
+
+def findbestnext(computer):
+    highest = findhighest(computer)
+    nrid = findnextrid(computer)
+    best = max(highest,nrid)
+    #print(str(highest)+" "+str(nrid), flush=True)
+    return best
+
+def overriderid():
+    modified = False
+    samdb = getsamdb()
+    query = "(objectClass=rIDSet)"
+    result = samdb.search(expression=query, attrs=["rIDAllocationPool","rIDNextRID","rIDPreviousAllocationPool"])
+    for item in result:
+        #print(item, flush=True)
+        #print(item["rIDAllocationPool"], flush=True)
+        #print(item["rIDNextRID"], flush=True)
+        dn = str(item["dn"])
+        #print(dn, flush=True)
+        low, high = split_val(int(str(item["rIDAllocationPool"])))
+        #print(low, flush=True)
+        #print(high, flush=True)
+        if "rIDPreviousAllocationPool" in item:
+            prevlow, prevhigh = split_val(int(str(item["rIDPreviousAllocationPool"])))
+        else:
+            prevlow, prevhigh = 0, 0
+        #print(prevlow, flush=True)
+        #print(prevhigh, flush=True)
+        if prevlow==0 or prevhigh==0:
+            prevlow, prevhigh = low, high
+            setpreviousallocationpool(dn,prevlow,prevhigh)
+            modified = True
+
+        if "rIDNextRID" in item:
+            nrid = int(str(item["rIDNextRID"]))
+        else:
+            nrid = 0
+        #print(nrid, flush=True)
+
+        if nrid < low or nrid > high:
+            if verbosenextrid:
+                print("Next RID for '"+dn+"' from "+str(nrid)+" into "+str(low), flush=True)
+            setnextdnrid(dn,low)
+            modified = True
+            #at least nextrid in range
+
+        highest = findhighestridinrange(low,high)
+        if highest != None:
+            if nrid < highest:
+                if verbosenextrid:
+                    print("Next RID for '"+dn+"' from "+str(nrid)+" into "+str(highest), flush=True)
+                setnextdnrid(dn,highest)
+                modified = True
+                #-> nexrid in fact is highest in the server range
+
+    return modified
+
+def overrideconfig():
+    modified = False
+    domainsid = getdomainsid()
+    domainname = sidtodomain(domainsid)
+    samdb = getsamdb()
+    computername = samdb.host_dns_name().split('.')[0]
+    xid = rangegenericstart(domainname)+findbestnext(computername)
+    #print(xid, flush=True)
+    if overrideidmapvalue("CONFIG","xidNumber",str(xid)):
+        modified = True
+    if overrideidmapvalue("CONFIG","lowerBound",str(rangegenericstart(domainname))):
+        modified = True
+    if overrideidmapvalue("CONFIG","upperBound",str(rangegenericend(domainname)+1)):
+        modified = True
+    return modified
+
+def findallxid():
+    modified = False
+    idmapdb = getidmapdb()
+    samdb = getsamdb()
+    query = "(|(objectClass=user)(objectClass=group))"
+    result = samdb.search(expression=query, attrs=["objectSid"])
+    for item in result:
+        sid = str(ndr_unpack( security.dom_sid, item["objectSid"][0] ))
+        query = "(objectSid="+sid+")"
+        result = idmapdb.search(expression=query, attrs=["xidNumber"])
+        if len(result)==0:
+            newxid = str(calculatexid(sid))
+            newtypeid = str(calculatetype(sid))
+            if verboseinsert:
+                print("inserting xid - "+sid+" -> into "+newxid+" with type "+newtypeid, flush=True)
+            modified = True
+            setxidtype(sid,newxid,newtypeid)
+    return modified
+
+#-------------------------------------------------------------------------------
+
+def main():
+    errors = 0
+    
+    try:
+        if sambaavailable():
+            modified = False
+            if overridexid():
+                modified = True
+            if findallxid():
+                modified = True
+            if overriderid():
+                modified = True
+            if overrideconfig():
+                modified = True
+            if modified == True:
+                completedproc = subprocess.run(["/usr/bin/net","cache","flush"],capture_output=True)
+                if completedproc.returncode != 0:
+                    print(completedproc.stdout.decode(), flush=True)
+                    print(completedproc.stderr.decode(), flush=True)
+                    errors = errors+1
+    except Exception as e:
+        errors = errors+1
+        print(e, flush=True)
+    
+    if errors>0:
+        sys.exit(1)
+
+main()
+
+#-------------------------------------------------------------------------------
