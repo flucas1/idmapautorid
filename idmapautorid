@@ -3,8 +3,6 @@
 
 import os
 import sys
-import time
-import subprocess
 import re
 import socket
 import struct
@@ -528,12 +526,24 @@ def findallxid():
             setxidtype(sid, newxid, newtypeid)
     return modified
 
+
+def flush_net_cache() -> bool:
+    completedproc = subprocess.run(
+        ["/usr/bin/net", "cache", "flush"],
+        capture_output=True,
+    )
+    if completedproc.returncode != 0:
+        print(completedproc.stdout.decode(), flush=True)
+        print(completedproc.stderr.decode(), flush=True)
+        return False
+    return True
+
+
 # -------------------------------------------------------------------------------
 
 
 async def main():
     errors = 0
-
     try:
         if sambaavailable():
             modified = False
@@ -545,16 +555,12 @@ async def main():
                 modified = True
             if overrideconfig():
                 modified = True
-            if modified == True:
-                completedproc = subprocess.run(["/usr/bin/net", "cache", "flush"], capture_output=True)
-                if completedproc.returncode != 0:
-                    print(completedproc.stdout.decode(), flush=True)
-                    print(completedproc.stderr.decode(), flush=True)
-                    errors = errors + 1
+            if modified:
+                if not flush_net_cache():
+                    errors += 1
     except Exception as e:
-        errors = errors + 1
+        errors += 1
         print(e, flush=True)
-
     if errors > 0:
         sys.exit(1)
 
