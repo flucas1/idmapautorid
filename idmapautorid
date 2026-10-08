@@ -127,7 +127,7 @@ def rangegenericrangepart(domain, part, fallbackdomain, fallbackgeneric, fallbac
     elif domain == "*":
         result = fallbackgeneric
     else:
-        result = fallbackunkown
+        result = fallbackunknown
     return result
 
 
