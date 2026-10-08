@@ -4,7 +4,6 @@
 import os
 import sys
 import time
-import concurrent.futures
 import subprocess
 import re
 import socket
@@ -12,6 +11,7 @@ import struct
 import datetime
 import tempfile
 import contextlib
+import asyncio
 
 import ldb
 from samba.samdb import SamDB
@@ -22,6 +22,8 @@ from samba.dcerpc import samr, security
 import samba.param
 import base64
 import binascii
+
+#-------------------------------------------------------------------------------
 
 alldebug = True
 verboseconfig = alldebug or False
@@ -483,7 +485,7 @@ def findallxid():
 
 #-------------------------------------------------------------------------------
 
-def main():
+async def main():
     errors = 0
     
     try:
@@ -510,6 +512,9 @@ def main():
     if errors>0:
         sys.exit(1)
 
-main()
+#-------------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    asyncio.run(main())
 
 #-------------------------------------------------------------------------------
