@@ -527,14 +527,17 @@ def findallxid():
     return modified
 
 
-def flush_net_cache() -> bool:
-    completedproc = subprocess.run(
-        ["/usr/bin/net", "cache", "flush"],
-        capture_output=True,
+async def flush_net_cache() -> bool:
+    cmdline = ["/usr/bin/net", "cache", "flush"]
+    process = await asyncio.create_subprocess_exec(
+        *cmdline,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
-    if completedproc.returncode != 0:
-        print(completedproc.stdout.decode(), flush=True)
-        print(completedproc.stderr.decode(), flush=True)
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        print(stdout.decode(), flush=True)
+        print(stderr.decode(), flush=True)
         return False
     return True
 
@@ -556,7 +559,7 @@ async def main():
             if overrideconfig():
                 modified = True
             if modified:
-                if not flush_net_cache():
+                if not await flush_net_cache():
                     errors += 1
     except Exception as e:
         errors += 1
