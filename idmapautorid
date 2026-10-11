@@ -10,13 +10,13 @@ import datetime
 import tempfile
 import contextlib
 import asyncio
-
 import ldb
-from samba.samdb import SamDB
-from samba.idmap import IDmapDB
-from samba.auth import system_session
-from samba.ndr import ndr_pack, ndr_unpack
-from samba.dcerpc import samr, security
+import samba.samdb
+import samba.idmap
+import samba.auth
+import samba.ndr
+import samba.dcerpc.samr
+import samba.dcerpc.security
 import samba.param
 import base64
 import binascii
@@ -60,7 +60,7 @@ def getsamdb():
     global samdb
     if samdb == None:
         lp = getlp()
-        samdb = SamDB(lp=lp, session_info=system_session())
+        samdb = samba.samdb.SamDB(lp=lp, session_info=samba.auth.system_session())
     return samdb
 
 
@@ -69,7 +69,7 @@ idmapdb = None
 
 def getidmapdb():
     lp = getlp()
-    return IDmapDB(lp=lp, session_info=system_session())
+    return samba.idmap.IDmapDB(lp=lp, session_info=samba.auth.system_session())
 
 
 secretsdb = None
@@ -304,7 +304,7 @@ def overridexid():
     # result = idmapdb.search(expression=query, scope=ldb.SCOPE_SUBTREE)
     result = idmapdb.search(expression=query, attrs=["objectSid", "xidNumber", "type"])
     for item in result:
-        sid = str(ndr_unpack(security.dom_sid, item["objectSid"][0]))
+        sid = str(samba.ndr.ndr_unpack(samba.dcerpc.security.dom_sid, item["objectSid"][0]))
         xid = str(item["xidNumber"][0])
         typeid = str(item["type"][0])
         newxid = calculatexid(sid)
@@ -366,7 +366,7 @@ def findhighestridinrange(low, high):
     highest = 0
     for item in result:
         dn = str(item["dn"])
-        sid = str(ndr_unpack(security.dom_sid, item["objectSid"][0]))
+        sid = str(samba.ndr.ndr_unpack(samba.dcerpc.security.dom_sid, item["objectSid"][0]))
         rid = int(sid.split("-")[-1])
         if rid >= low and rid <= high and rid > highest:
             # print(dn, flush=True)
@@ -514,7 +514,7 @@ def findallxid():
     query = "(|(objectClass=user)(objectClass=group))"
     result = samdb.search(expression=query, attrs=["objectSid"])
     for item in result:
-        sid = str(ndr_unpack(security.dom_sid, item["objectSid"][0]))
+        sid = str(samba.ndr.ndr_unpack(samba.dcerpc.security.dom_sid, item["objectSid"][0]))
         query = "(objectSid=" + sid + ")"
         result = idmapdb.search(expression=query, attrs=["xidNumber"])
         if len(result) == 0:
@@ -566,6 +566,7 @@ async def main():
         print(e, flush=True)
     if errors > 0:
         sys.exit(1)
+
 
 # -------------------------------------------------------------------------------
 
